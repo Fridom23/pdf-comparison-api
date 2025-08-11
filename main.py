@@ -51,6 +51,58 @@ def extract_page_diffs(filled_pdf_path: str, empty_pdf_path: str, pages: List[in
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur lors de l'extraction : {str(e)}")
 
+@app.post("/compare-pdf-base64")
+async def compare_pdf_base64(
+    file_content: str,
+    filename: str = "document.pdf"
+):
+    """
+    Compare un fichier PDF en Base64 avec le modèle vierge.
+    Parfait pour Power Automate !
+    
+    - **file_content**: Contenu du PDF en Base64
+    - **filename**: Nom du fichier (optionnel)
+    
+    Body JSON exemple:
+    {
+        "file_content": "JVBERi0xLjQKMSAwIG9...",
+        "filename": "contrat.pdf"
+    }
+    """
+    import base64
+    
+    # Vérifier que le modèle vierge existe
+    if not os.path.exists(MODELE_VIERGE_PATH):
+        raise HTTPException(status_code=500, detail="Le fichier modèle vierge n'a pas été trouvé")
+    
+    try:
+        # Décoder le Base64
+        pdf_bytes = base64.b64decode(file_content)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Contenu Base64 invalide")
+    
+    # Créer un fichier temporaire pour le PDF
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as temp_file:
+        try:
+            # Écrire les bytes décodés
+            temp_file.write(pdf_bytes)
+            temp_file.flush()
+            
+            # Extraire les différences
+            differences = extract_page_diffs(temp_file.name, MODELE_VIERGE_PATH, PAGES_A_COMPARER)
+            
+            return JSONResponse(content=differences)
+            
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Erreur lors du traitement : {str(e)}")
+        
+        finally:
+            # Nettoyer le fichier temporaire
+            try:
+                os.unlink(temp_file.name)
+            except:
+                pass
+
 @app.post("/upload-model")
 async def upload_model(file: UploadFile = File(...)):
     """
@@ -186,7 +238,7 @@ async def get_config():
 
 if __name__ == "__main__":
     # Lancer le serveur de développement
-    port = int(os.getenv("PORT", 8001))
+    port = int(os.getenv("PORT", 8000))
     print(f"🚀 Serveur démarré sur http://localhost:{port}")
     print(f"📖 Documentation interactive : http://localhost:{port}/docs")
     uvicorn.run(app, host="0.0.0.0", port=port)
