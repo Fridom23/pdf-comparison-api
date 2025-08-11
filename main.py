@@ -51,6 +51,156 @@ def extract_page_diffs(filled_pdf_path: str, empty_pdf_path: str, pages: List[in
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur lors de l'extraction : {str(e)}")
 
+@app.post("/compare-pdf-chunk")
+async def compare_pdf_chunk(
+    file_content_chunk: str,
+    chunk_number: int = 1,
+    total_chunks: int = 1,
+    session_id: str = "default",
+    filename: str = "document.pdf"
+):
+    """
+    Compare un fichier PDF envoyé par chunks pour les gros fichiers.
+    
+    - **file_content_chunk**: Partie du contenu Base64
+    - **chunk_number**: Numéro du chunk (1, 2, 3...)
+    - **total_chunks**: Nombre total de chunks
+    - **session_id**: ID unique pour la session
+    - **filename**: Nom du fichier
+    """
+    import base64
+    import os
+    
+    # Créer le dossier temporaire pour les chunks
+    temp_dir = f"temp_{session_id}"
+    os.makedirs(temp_dir, exist_ok=True)
+    
+    try:
+        # Sauvegarder ce chunk
+        chunk_file = os.path.join(temp_dir, f"chunk_{chunk_number}.txt")
+        with open(chunk_file, 'w') as f:
+            f.write(file_content_chunk)
+        
+        # Si ce n'est pas le dernier chunk, retourner status
+        if chunk_number < total_chunks:
+            return JSONResponse(content={
+                "success": True,
+                "status": f"Chunk {chunk_number}/{total_chunks} reçu",
+                "next_chunk": chunk_number + 1
+            })
+        
+        # Dernier chunk : reconstituer le fichier complet
+        complete_base64 = ""
+        for i in range(1, total_chunks + 1):
+            chunk_path = os.path.join(temp_dir, f"chunk_{i}.txt")
+            if os.path.exists(chunk_path):
+                with open(chunk_path, 'r') as f:
+                    complete_base64 += f.read()
+        
+        # Décoder et traiter
+        pdf_bytes = base64.b64decode(complete_base64)
+        
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as temp_file:
+            temp_file.write(pdf_bytes)
+            temp_file.flush()
+            
+            differences = extract_page_diffs(temp_file.name, MODELE_VIERGE_PATH, PAGES_A_COMPARER)
+            
+            return JSONResponse(content={
+                "success": True,
+                "filename": filename,
+                "file_size_kb": len(pdf_bytes) // 1024,
+                "differences": differences
+            })
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur : {str(e)}")
+    
+    finally:
+        # Nettoyer les fichiers temporaires
+        try:
+            import shutil
+            if os.path.exists(temp_dir):
+                shutil.rmtree(temp_dir)
+        except:
+            pass
+
+@app.post("/compare-pdf-url")
+async def compare_pdf_url(
+    file_url: str,
+    access_token: str,
+    filename: str = "document.pdf"
+):
+    """
+    Compare un fichier PDF depuis une URL SharePoint avec le modèle vierge.
+    Optimisé pour Power Automate avec gros fichiers.
+    
+    - **file_url**: URL SharePoint du fichier PDF
+    - **access_token**: Token d'accès Power Automate
+    - **filename**: Nom du fichier (optionnel)
+    
+    Body JSON exemple:
+    {
+        "file_url": "https://tenant.sharepoint.com/sites/...",
+        "access_token": "Bearer eyJ0eXAiOiJKV1QiLCJhb...",
+        "filename": "contrat.pdf"
+    }
+    """
+    import requests
+    
+    # Vérifier que le modèle vierge existe
+    if not os.path.exists(MODELE_VIERGE_PATH):
+        raise HTTPException(status_code=500, detail="Le fichier modèle vierge n'a pas été trouvé")
+    
+    try:
+        # Télécharger le fichier depuis SharePoint
+        headers = {
+            'Authorization': access_token,
+            'Accept': 'application/json;odata=verbose'
+        }
+        
+        response = requests.get(file_url, headers=headers, timeout=30)
+        response.raise_for_status()
+        
+        pdf_bytes = response.content
+        
+        # Vérifier que c'est un PDF
+        if not pdf_bytes.startswith(b'%PDF'):
+            raise HTTPException(status_code=400, detail="Le fichier téléchargé n'est pas un PDF valide")
+        
+        # Vérifier la taille (max 50MB)
+        if len(pdf_bytes) > 50 * 1024 * 1024:
+            raise HTTPException(status_code=413, detail="Fichier trop volumineux (max 50MB)")
+        
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=400, detail=f"Erreur de téléchargement : {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur lors du téléchargement : {str(e)}")
+    
+    # Traitement du PDF
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as temp_file:
+        try:
+            temp_file.write(pdf_bytes)
+            temp_file.flush()
+            
+            differences = extract_page_diffs(temp_file.name, MODELE_VIERGE_PATH, PAGES_A_COMPARER)
+            
+            return JSONResponse(content={
+                "success": True,
+                "filename": filename,
+                "file_size_kb": len(pdf_bytes) // 1024,
+                "differences": differences
+            })
+            
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Erreur lors du traitement : {str(e)}")
+        
+        finally:
+            try:
+                os.unlink(temp_file.name)
+            except:
+                pass
+
 @app.post("/compare-pdf-safe")
 async def compare_pdf_safe(request: dict):
     """
