@@ -51,6 +51,87 @@ def extract_page_diffs(filled_pdf_path: str, empty_pdf_path: str, pages: List[in
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur lors de l'extraction : {str(e)}")
 
+@app.post("/compare-pdf-safe")
+async def compare_pdf_safe(request: dict):
+    """
+    Version sécurisée pour Power Automate avec gestion d'erreurs complète.
+    
+    Body JSON:
+    {
+        "file_content": "base64_string",
+        "filename": "document.pdf"
+    }
+    """
+    import base64
+    
+    try:
+        # Extraire les données du request
+        file_content = request.get("file_content", "")
+        filename = request.get("filename", "document.pdf")
+        
+        if not file_content:
+            return JSONResponse(
+                status_code=400,
+                content={"success": False, "error": "file_content manquant"}
+            )
+        
+        # Vérifier que le modèle vierge existe
+        if not os.path.exists(MODELE_VIERGE_PATH):
+            return JSONResponse(
+                status_code=500,
+                content={"success": False, "error": "Modèle vierge non trouvé"}
+            )
+        
+        # Vérifier la taille
+        if len(file_content) > 15000000:
+            return JSONResponse(
+                status_code=413,
+                content={"success": False, "error": "Fichier trop volumineux"}
+            )
+        
+        # Décoder le Base64
+        try:
+            pdf_bytes = base64.b64decode(file_content)
+        except Exception as e:
+            return JSONResponse(
+                status_code=400,
+                content={"success": False, "error": f"Base64 invalide: {str(e)}"}
+            )
+        
+        # Vérifier que c'est un PDF
+        if not pdf_bytes.startswith(b'%PDF'):
+            return JSONResponse(
+                status_code=400,
+                content={"success": False, "error": "Pas un fichier PDF valide"}
+            )
+        
+        # Traitement du PDF
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as temp_file:
+            try:
+                temp_file.write(pdf_bytes)
+                temp_file.flush()
+                
+                differences = extract_page_diffs(temp_file.name, MODELE_VIERGE_PATH, PAGES_A_COMPARER)
+                
+                return JSONResponse(content={
+                    "success": True,
+                    "filename": filename,
+                    "file_size_kb": len(pdf_bytes) // 1024,
+                    "differences": differences
+                })
+                
+            finally:
+                try:
+                    os.unlink(temp_file.name)
+                except:
+                    pass
+                    
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "error": f"Erreur serveur: {str(e)}"}
+        )
+
 @app.post("/compare-pdf-base64")
 async def compare_pdf_base64(
     file_content: str,
@@ -75,11 +156,20 @@ async def compare_pdf_base64(
     if not os.path.exists(MODELE_VIERGE_PATH):
         raise HTTPException(status_code=500, detail="Le fichier modèle vierge n'a pas été trouvé")
     
+    # Vérifier la taille du Base64 (limite ~10MB)
+    if len(file_content) > 15000000:  # ~10MB en Base64
+        raise HTTPException(status_code=413, detail="Fichier trop volumineux (max 10MB)")
+    
     try:
         # Décoder le Base64
         pdf_bytes = base64.b64decode(file_content)
-    except Exception:
-        raise HTTPException(status_code=400, detail="Contenu Base64 invalide")
+        
+        # Vérifier que c'est un PDF valide
+        if not pdf_bytes.startswith(b'%PDF'):
+            raise HTTPException(status_code=400, detail="Le fichier ne semble pas être un PDF valide")
+            
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Contenu Base64 invalide: {str(e)}")
     
     # Créer un fichier temporaire pour le PDF
     with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as temp_file:
@@ -91,7 +181,12 @@ async def compare_pdf_base64(
             # Extraire les différences
             differences = extract_page_diffs(temp_file.name, MODELE_VIERGE_PATH, PAGES_A_COMPARER)
             
-            return JSONResponse(content=differences)
+            return JSONResponse(content={
+                "success": True,
+                "filename": filename,
+                "file_size_kb": len(pdf_bytes) // 1024,
+                "differences": differences
+            })
             
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Erreur lors du traitement : {str(e)}")
