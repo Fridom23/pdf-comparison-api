@@ -119,6 +119,105 @@ async def upload_model(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur lors de l'upload : {str(e)}")
 
+@app.post("/compare-pdf-custom-base64")
+async def compare_pdf_custom_base64(
+    file_content: str,
+    pages: str = "0,2,10,11",
+    filename: str = "document.pdf"
+):
+    """
+    Compare un fichier PDF en Base64 avec le modèle vierge avec des pages personnalisées.
+    Parfait pour Power Automate !
+    
+    - **file_content**: Contenu du PDF en Base64
+    - **pages**: Pages à comparer sous forme de chaîne séparée par des virgules (ex: "0,2,10,11")
+    - **filename**: Nom du fichier (optionnel)
+    
+    Body JSON exemple:
+    {
+        "file_content": "JVBERi0xLjQKMSAwIG9...",
+        "pages": "0,1,2,3",
+        "filename": "contrat.pdf"
+    }
+    """
+    import base64
+    
+    # Vérifier que le modèle vierge existe
+    if not os.path.exists(MODELE_VIERGE_PATH):
+        raise HTTPException(status_code=500, detail="Le fichier modèle vierge n'a pas été trouvé")
+    
+    try:
+        # Décoder le Base64
+        pdf_bytes = base64.b64decode(file_content)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Contenu Base64 invalide")
+    
+    # Convertir la chaîne de pages en liste d'entiers
+    try:
+        pages_to_compare = [int(p.strip()) for p in pages.split(',')]
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Format de pages invalide. Utilisez des nombres séparés par des virgules (ex: '0,2,10,11')")
+    
+    # Créer un fichier temporaire pour le PDF
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as temp_file:
+        try:
+            # Écrire les bytes décodés
+            temp_file.write(pdf_bytes)
+            temp_file.flush()
+            
+            # Extraire les différences
+            differences = extract_page_diffs(temp_file.name, MODELE_VIERGE_PATH, pages_to_compare)
+            
+            return JSONResponse(content=differences)
+            
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Erreur lors du traitement : {str(e)}")
+        
+        finally:
+            # Nettoyer le fichier temporaire
+            try:
+                os.unlink(temp_file.name)
+            except:
+                pass
+
+@app.post("/upload-model-base64")
+async def upload_model_base64(
+    file_content: str,
+    filename: str = "modele_vierge.pdf"
+):
+    """
+    Upload le fichier modèle vierge en Base64 (à faire une seule fois).
+    Parfait pour Power Automate !
+    
+    - **file_content**: Contenu du PDF modèle en Base64
+    - **filename**: Nom du fichier modèle (optionnel)
+    
+    Body JSON exemple:
+    {
+        "file_content": "JVBERi0xLjQKMSAwIG9...",
+        "filename": "modele_vierge.pdf"
+    }
+    """
+    import base64
+    
+    try:
+        # Décoder le Base64
+        pdf_bytes = base64.b64decode(file_content)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Contenu Base64 invalide")
+    
+    # Vérifier que c'est bien un PDF (vérification basique)
+    if not pdf_bytes.startswith(b'%PDF'):
+        raise HTTPException(status_code=400, detail="Le fichier ne semble pas être un PDF valide")
+    
+    try:
+        # Sauvegarder le modèle vierge
+        with open("modele_vierge.pdf", "wb") as f:
+            f.write(pdf_bytes)
+        return {"message": f"Modèle vierge '{filename}' uploadé avec succès en Base64"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur lors de l'upload : {str(e)}")
+
 @app.post("/compare-pdf-custom")
 async def compare_pdf_custom(
     file: UploadFile = File(...),
