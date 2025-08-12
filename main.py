@@ -1,16 +1,48 @@
 import os
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Header, status
 from fastapi.responses import JSONResponse
 import fitz  # PyMuPDF
 import tempfile
 from typing import Dict, List, Optional
 import uvicorn
 
-app = FastAPI(title="PDF Comparison API", version="1.0.1")
+app = FastAPI(title="PDF Comparison API", version="1.1.0")
 
 # Configuration - adaptée pour le déploiement
 MODELE_VIERGE_PATH = os.getenv("MODELE_VIERGE_PATH", "modele_vierge.pdf")
 PAGES_A_COMPARER = [1, 3, 11, 12]  # pages 1, 3, 11, 12 (indexées à 0)
+
+# Configuration de sécurité
+class APIKeyError(HTTPException):
+    def __init__(self, detail: str):
+        super().__init__(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=detail,
+            headers={"WWW-Authenticate": "ApiKey"},
+        )
+
+async def get_api_key(x_api_key: Optional[str] = Header(None)) -> str:
+    """Valide la clé API fournie dans les headers."""
+    if not x_api_key:
+        raise APIKeyError("En-tête X-API-Key manquant")
+    
+    # Récupérer les clés valides depuis les variables d'environnement
+    valid_api_key = os.getenv("API_KEY")
+    if not valid_api_key:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Clé API non configurée sur le serveur"
+        )
+    
+    # Support de plusieurs clés (séparées par des virgules)
+    valid_keys = [key.strip() for key in valid_api_key.split(",")]
+    
+    if x_api_key not in valid_keys:
+        raise APIKeyError("Clé API invalide")
+    
+    # Log optionnel de l'utilisation (masquage partiel de la clé)
+    print(f"🔑 Accès autorisé avec la clé: {x_api_key[:8]}...")
+    return x_api_key
 
 def nettoyer_lignes(texte: str) -> set:
     """Nettoie et filtre les lignes de texte."""
@@ -51,10 +83,26 @@ def extract_page_diffs(filled_pdf_path: str, empty_pdf_path: str, pages: List[in
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur lors de l'extraction : {str(e)}")
 
+# Routes publiques (sans authentification)
+@app.get("/")
+async def root():
+    """Point d'entrée de l'API."""
+    return {"message": "API de comparaison de PDF", "version": "1.1.0"}
+
+@app.get("/health")
+async def health_check():
+    """Vérification de l'état de l'API."""
+    return {"status": "healthy", "model_file_exists": os.path.exists(MODELE_VIERGE_PATH)}
+
+# Routes protégées (avec authentification par clé API)
 @app.post("/upload-model")
-async def upload_model(file: UploadFile = File(...)):
+async def upload_model(
+    file: UploadFile = File(...),
+    api_key: str = Depends(get_api_key)
+):
     """
     Upload le fichier modèle vierge (à faire une seule fois).
+    Nécessite une clé API valide.
     """
     if not file.filename.lower().endswith('.pdf'):
         raise HTTPException(status_code=400, detail="Le fichier doit être un PDF")
@@ -63,14 +111,19 @@ async def upload_model(file: UploadFile = File(...)):
         content = await file.read()
         with open("modele_vierge.pdf", "wb") as f:
             f.write(content)
+        print(f"📁 Modèle vierge uploadé par la clé: {api_key[:8]}...")
         return {"message": "Modèle vierge uploadé avec succès"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur lors de l'upload : {str(e)}")
 
 @app.post("/upload-model-base64")
-async def upload_model_base64(request: dict):
+async def upload_model_base64(
+    request: dict,
+    api_key: str = Depends(get_api_key)
+):
     """
     Version sécurisée - Upload le fichier modèle vierge en Base64.
+    Nécessite une clé API valide.
     
     Body JSON:
     {
@@ -119,6 +172,7 @@ async def upload_model_base64(request: dict):
             with open("modele_vierge.pdf", "wb") as f:
                 f.write(pdf_bytes)
             
+            print(f"📁 Modèle vierge Base64 uploadé par la clé: {api_key[:8]}...")
             return JSONResponse(content={
                 "success": True,
                 "message": f"Modèle vierge '{filename}' uploadé avec succès",
@@ -140,13 +194,15 @@ async def upload_model_base64(request: dict):
 @app.post("/compare-pdf")
 async def compare_pdf(
     file: UploadFile = File(...),
-    pages: str = "1,3,11,12"  # Pages sous forme de chaîne séparée par des virgules
+    pages: str = "1,3,11,12",  # Pages sous forme de chaîne séparée par des virgules
+    api_key: str = Depends(get_api_key)
 ):
     """
     Compare un fichier PDF uploadé avec le modèle vierge avec des pages personnalisées.
+    Nécessite une clé API valide.
     
     - **file**: Fichier PDF à comparer
-    - **pages**: Pages à comparer sous forme de chaîne séparée par des virgules (ex: "0,2,10,11")
+    - **pages**: Pages à comparer sous forme de chaîne séparée par des virgules (ex: "1,3,11,12")
     
     Retourne un JSON avec les différences par page au format {"page11": "texte", "page12": "texte"}
     """
@@ -163,7 +219,7 @@ async def compare_pdf(
     try:
         pages_to_compare = [int(p.strip()) for p in pages.split(',')]
     except ValueError:
-        raise HTTPException(status_code=400, detail="Format de pages invalide. Utilisez des nombres séparés par des virgules (ex: '0,2,10,11')")
+        raise HTTPException(status_code=400, detail="Format de pages invalide. Utilisez des nombres séparés par des virgules (ex: '1,3,11,12')")
     
     # Créer un fichier temporaire pour le PDF uploadé
     with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as temp_file:
@@ -176,6 +232,7 @@ async def compare_pdf(
             # Extraire les différences
             differences = extract_page_diffs(temp_file.name, MODELE_VIERGE_PATH, pages_to_compare)
             
+            print(f"📊 Comparaison PDF effectuée par la clé: {api_key[:8]}... - Pages: {pages_to_compare}")
             return JSONResponse(content=differences)
             
         except Exception as e:
@@ -189,14 +246,18 @@ async def compare_pdf(
                 pass
 
 @app.post("/compare-pdf-base64")
-async def compare_pdf_base64(request: dict):
+async def compare_pdf_base64(
+    request: dict,
+    api_key: str = Depends(get_api_key)
+):
     """
     Version sécurisée - Compare un fichier PDF en Base64 avec pages personnalisées.
+    Nécessite une clé API valide.
     
     Body JSON:
     {
         "file_content": "base64_string",
-        "pages": "0,2,10,11",
+        "pages": "1,3,11,12",
         "filename": "document.pdf"
     }
     """
@@ -205,7 +266,7 @@ async def compare_pdf_base64(request: dict):
     try:
         # Extraire les données du request
         file_content = request.get("file_content", "")
-        pages = request.get("pages", "1, 3, 11, 12")  # Pages par défaut
+        pages = request.get("pages", "1,3,11,12")  # Pages par défaut
         filename = request.get("filename", "document.pdf")
         
         if not file_content:
@@ -227,7 +288,7 @@ async def compare_pdf_base64(request: dict):
         except ValueError:
             return JSONResponse(
                 status_code=400,
-                content={"success": False, "error": "Format de pages invalide. Utilisez des nombres séparés par des virgules (ex: '0,2,10,11')"}
+                content={"success": False, "error": "Format de pages invalide. Utilisez des nombres séparés par des virgules (ex: '1,3,11,12')"}
             )
         
         # Vérifier la taille
@@ -261,6 +322,7 @@ async def compare_pdf_base64(request: dict):
                 
                 differences = extract_page_diffs(temp_file.name, MODELE_VIERGE_PATH, pages_to_compare)
                 
+                print(f"📊 Comparaison PDF Base64 effectuée par la clé: {api_key[:8]}... - Pages: {pages_to_compare}")
                 return JSONResponse(content={
                     "success": True,
                     "filename": filename,
@@ -281,19 +343,9 @@ async def compare_pdf_base64(request: dict):
             content={"success": False, "error": f"Erreur serveur: {str(e)}"}
         )
 
-@app.get("/")
-async def root():
-    """Point d'entrée de l'API."""
-    return {"message": "API de comparaison de PDF", "version": "1.0.1"}
-
-@app.get("/health")
-async def health_check():
-    """Vérification de l'état de l'API."""
-    return {"status": "healthy", "model_file_exists": os.path.exists(MODELE_VIERGE_PATH)}
-
 @app.get("/config")
-async def get_config():
-    """Retourne la configuration actuelle."""
+async def get_config(api_key: str = Depends(get_api_key)):
+    """Retourne la configuration actuelle. Nécessite une clé API valide."""
     return {
         "modele_vierge_path": MODELE_VIERGE_PATH,
         "pages_par_defaut": PAGES_A_COMPARER,
@@ -305,5 +357,5 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", 8000))
     print(f"🚀 Serveur démarré sur http://localhost:{port}")
     print(f"📖 Documentation interactive : http://localhost:{port}/docs")
+    print(f"🔐 Clé API configurée : {'✅ Oui' if os.getenv('API_KEY') else '❌ Non'}")
     uvicorn.run(app, host="0.0.0.0", port=port)
-
