@@ -6,7 +6,7 @@ import tempfile
 from typing import Dict, List, Optional
 import uvicorn
 
-app = FastAPI(title="PDF Comparison API", version="1.0.0")
+app = FastAPI(title="PDF Comparison API", version="1.0.1")
 
 # Configuration - adaptée pour le déploiement
 MODELE_VIERGE_PATH = os.getenv("MODELE_VIERGE_PATH", "modele_vierge.pdf")
@@ -66,99 +66,6 @@ async def upload_model(file: UploadFile = File(...)):
         return {"message": "Modèle vierge uploadé avec succès"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur lors de l'upload : {str(e)}")
-
-@app.post("/compare-pdf-custom-base64")
-async def compare_pdf_custom_base64(request: dict):
-    """
-    Version sécurisée - Compare un fichier PDF en Base64 avec pages personnalisées.
-    
-    Body JSON:
-    {
-        "file_content": "base64_string",
-        "pages": "0,2,10,11",
-        "filename": "document.pdf"
-    }
-    """
-    import base64
-    
-    try:
-        # Extraire les données du request
-        file_content = request.get("file_content", "")
-        pages = request.get("pages", "1, 3, 11, 12")  # Pages par défaut
-        filename = request.get("filename", "document.pdf")
-        
-        if not file_content:
-            return JSONResponse(
-                status_code=400,
-                content={"success": False, "error": "file_content manquant"}
-            )
-        
-        # Vérifier que le modèle vierge existe
-        if not os.path.exists(MODELE_VIERGE_PATH):
-            return JSONResponse(
-                status_code=500,
-                content={"success": False, "error": "Modèle vierge non trouvé"}
-            )
-        
-        # Convertir et valider les pages
-        try:
-            pages_to_compare = [int(p.strip()) for p in pages.split(',')]
-        except ValueError:
-            return JSONResponse(
-                status_code=400,
-                content={"success": False, "error": "Format de pages invalide. Utilisez des nombres séparés par des virgules (ex: '0,2,10,11')"}
-            )
-        
-        # Vérifier la taille
-        if len(file_content) > 15000000:
-            return JSONResponse(
-                status_code=413,
-                content={"success": False, "error": "Fichier trop volumineux (max ~10MB)"}
-            )
-        
-        # Décoder le Base64
-        try:
-            pdf_bytes = base64.b64decode(file_content)
-        except Exception as e:
-            return JSONResponse(
-                status_code=400,
-                content={"success": False, "error": f"Base64 invalide: {str(e)}"}
-            )
-        
-        # Vérifier que c'est un PDF
-        if not pdf_bytes.startswith(b'%PDF'):
-            return JSONResponse(
-                status_code=400,
-                content={"success": False, "error": "Pas un fichier PDF valide"}
-            )
-        
-        # Traitement du PDF
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as temp_file:
-            try:
-                temp_file.write(pdf_bytes)
-                temp_file.flush()
-                
-                differences = extract_page_diffs(temp_file.name, MODELE_VIERGE_PATH, pages_to_compare)
-                
-                return JSONResponse(content={
-                    "success": True,
-                    "filename": filename,
-                    "pages_compared": pages_to_compare,
-                    "file_size_kb": len(pdf_bytes) // 1024,
-                    "differences": differences
-                })
-                
-            finally:
-                try:
-                    os.unlink(temp_file.name)
-                except:
-                    pass
-                    
-    except Exception as e:
-        return JSONResponse(
-            status_code=500,
-            content={"success": False, "error": f"Erreur serveur: {str(e)}"}
-        )
 
 @app.post("/upload-model-base64")
 async def upload_model_base64(request: dict):
@@ -281,10 +188,103 @@ async def compare_pdf(
             except:
                 pass
 
+@app.post("/compare-pdf-base64")
+async def compare_pdf_base64(request: dict):
+    """
+    Version sécurisée - Compare un fichier PDF en Base64 avec pages personnalisées.
+    
+    Body JSON:
+    {
+        "file_content": "base64_string",
+        "pages": "0,2,10,11",
+        "filename": "document.pdf"
+    }
+    """
+    import base64
+    
+    try:
+        # Extraire les données du request
+        file_content = request.get("file_content", "")
+        pages = request.get("pages", "1, 3, 11, 12")  # Pages par défaut
+        filename = request.get("filename", "document.pdf")
+        
+        if not file_content:
+            return JSONResponse(
+                status_code=400,
+                content={"success": False, "error": "file_content manquant"}
+            )
+        
+        # Vérifier que le modèle vierge existe
+        if not os.path.exists(MODELE_VIERGE_PATH):
+            return JSONResponse(
+                status_code=500,
+                content={"success": False, "error": "Modèle vierge non trouvé"}
+            )
+        
+        # Convertir et valider les pages
+        try:
+            pages_to_compare = [int(p.strip()) for p in pages.split(',')]
+        except ValueError:
+            return JSONResponse(
+                status_code=400,
+                content={"success": False, "error": "Format de pages invalide. Utilisez des nombres séparés par des virgules (ex: '0,2,10,11')"}
+            )
+        
+        # Vérifier la taille
+        if len(file_content) > 15000000:
+            return JSONResponse(
+                status_code=413,
+                content={"success": False, "error": "Fichier trop volumineux (max ~10MB)"}
+            )
+        
+        # Décoder le Base64
+        try:
+            pdf_bytes = base64.b64decode(file_content)
+        except Exception as e:
+            return JSONResponse(
+                status_code=400,
+                content={"success": False, "error": f"Base64 invalide: {str(e)}"}
+            )
+        
+        # Vérifier que c'est un PDF
+        if not pdf_bytes.startswith(b'%PDF'):
+            return JSONResponse(
+                status_code=400,
+                content={"success": False, "error": "Pas un fichier PDF valide"}
+            )
+        
+        # Traitement du PDF
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as temp_file:
+            try:
+                temp_file.write(pdf_bytes)
+                temp_file.flush()
+                
+                differences = extract_page_diffs(temp_file.name, MODELE_VIERGE_PATH, pages_to_compare)
+                
+                return JSONResponse(content={
+                    "success": True,
+                    "filename": filename,
+                    "pages_compared": pages_to_compare,
+                    "file_size_kb": len(pdf_bytes) // 1024,
+                    "differences": differences
+                })
+                
+            finally:
+                try:
+                    os.unlink(temp_file.name)
+                except:
+                    pass
+                    
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "error": f"Erreur serveur: {str(e)}"}
+        )
+
 @app.get("/")
 async def root():
     """Point d'entrée de l'API."""
-    return {"message": "API de comparaison de PDF", "version": "1.0.0"}
+    return {"message": "API de comparaison de PDF", "version": "1.0.1"}
 
 @app.get("/health")
 async def health_check():
@@ -306,3 +306,4 @@ if __name__ == "__main__":
     print(f"🚀 Serveur démarré sur http://localhost:{port}")
     print(f"📖 Documentation interactive : http://localhost:{port}/docs")
     uvicorn.run(app, host="0.0.0.0", port=port)
+
